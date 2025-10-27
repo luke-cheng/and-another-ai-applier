@@ -1,10 +1,10 @@
 {
-  "name": "chrome-extension-typescript-starter",
+  "name": "and-another-ai-applier",
   "version": "1.0.0",
-  "description": "chrome-extension-typescript-starter",
+  "description": "Another AI applier that utilizes Google Chrome's built-in Gemini Nano to autofill job application forms.",
   "main": "index.js",
   "scripts": {
-    "watch": "webpack --config webpack/webpack.dev.js --watch",
+    "dev": "webpack --config webpack/webpack.dev.js --watch",
     "build": "webpack --config webpack/webpack.prod.js",
     "clean": "rimraf dist",
     "test": "npx jest",
@@ -14,17 +14,18 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/chibat/chrome-extension-typescript-starter.git"
+    "url": "https://github.com/luke-cheng/and-another-ai-applier"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@types/chrome": "0.0.158",
+    "@types/chrome": "^0.1.24",
     "@types/jest": "^29.5.0",
     "@types/react": "^18.0.29",
     "@types/react-dom": "^18.0.11",
+    "chrome-types": "^0.1.384",
     "copy-webpack-plugin": "^9.0.1",
     "glob": "^7.1.6",
     "jest": "^29.5.0",
