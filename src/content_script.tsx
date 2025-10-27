@@ -1,31 +1,43 @@
-// Types
-interface FormField {
-  id: string;
-  label: string;
-  type: string;
-  value: string;
-  selector: string;
-}
+// Import types from formFillerService
+import { FormField } from './services/formFillerService';
 
-// Form detection function - uses input and label detection
+// Form detection function - enhanced to detect required fields and interactive elements
 const detectFormFields = (): FormField[] => {
   const fields: FormField[] = [];
-  const inputs = document.querySelectorAll('input, textarea, select');
   
-  inputs.forEach((input, index) => {
-    const element = input as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  // Detect all form elements including buttons
+  const elements = document.querySelectorAll('input, textarea, select, button');
+  
+  elements.forEach((element, index) => {
+    const htmlElement = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement;
     
     // Skip hidden fields
-    if (element.type === 'hidden') return;
+    if (htmlElement.type === 'hidden') return;
+    
+    // Determine element type
+    let elementType: 'input' | 'textarea' | 'select' | 'button' | 'checkbox' | 'radio' | 'other' = 'other';
+    if (htmlElement.tagName.toLowerCase() === 'button') {
+      elementType = 'button';
+    } else if (htmlElement.tagName.toLowerCase() === 'textarea') {
+      elementType = 'textarea';
+    } else if (htmlElement.tagName.toLowerCase() === 'select') {
+      elementType = 'select';
+    } else if (htmlElement.type === 'checkbox') {
+      elementType = 'checkbox';
+    } else if (htmlElement.type === 'radio') {
+      elementType = 'radio';
+    } else if (htmlElement.tagName.toLowerCase() === 'input') {
+      elementType = 'input';
+    }
     
     // Get label text
     let label = '';
-    const labelElement = document.querySelector(`label[for="${element.id}"]`);
+    const labelElement = document.querySelector(`label[for="${htmlElement.id}"]`);
     if (labelElement) {
       label = labelElement.textContent?.trim() || '';
     } else {
       // Try to find nearby text
-      const parent = element.parentElement;
+      const parent = htmlElement.parentElement;
       if (parent) {
         const textNodes = Array.from(parent.childNodes).filter(node => 
           node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
@@ -36,22 +48,53 @@ const detectFormFields = (): FormField[] => {
       }
     }
     
+    // Check if field is required
+    const isRequired = htmlElement.hasAttribute('required') || 
+                      htmlElement.getAttribute('aria-required') === 'true' ||
+                      label.includes('*') ||
+                      label.toLowerCase().includes('required');
+    
     // Generate selector
     let selector = '';
-    if (element.id) {
-      selector = `#${element.id}`;
-    } else if (element.name) {
-      selector = `[name="${element.name}"]`;
+    if (htmlElement.id) {
+      selector = `#${htmlElement.id}`;
+    } else if (htmlElement.name) {
+      selector = `[name="${htmlElement.name}"]`;
     } else {
-      selector = `input:nth-of-type(${index + 1})`;
+      selector = `${htmlElement.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
+    }
+    
+    // Get options for select elements
+    let options: string[] | undefined;
+    if (elementType === 'select') {
+      const selectElement = htmlElement as HTMLSelectElement;
+      options = Array.from(selectElement.options).map(option => option.text);
+    }
+    
+    // Get checked state for checkboxes and radio buttons
+    let checked: boolean | undefined;
+    if (elementType === 'checkbox' || elementType === 'radio') {
+      checked = (htmlElement as HTMLInputElement).checked;
+    }
+    
+    // Get appropriate label for buttons
+    let fieldLabel = label;
+    if (elementType === 'button') {
+      fieldLabel = htmlElement.textContent?.trim() || htmlElement.value || `Button ${index + 1}`;
+    } else if (!fieldLabel) {
+      fieldLabel = (htmlElement as HTMLInputElement | HTMLTextAreaElement).placeholder || `Field ${index + 1}`;
     }
     
     fields.push({
-      id: element.id || `field_${index}`,
-      label: label || (element as HTMLInputElement | HTMLTextAreaElement).placeholder || `Field ${index + 1}`,
-      type: element.type || element.tagName.toLowerCase(),
-      value: element.value || '',
-      selector: selector
+      id: htmlElement.id || `field_${index}`,
+      label: fieldLabel,
+      type: htmlElement.type || htmlElement.tagName.toLowerCase(),
+      value: htmlElement.value || '',
+      selector: selector,
+      required: isRequired,
+      elementType: elementType,
+      options: options,
+      checked: checked
     });
   });
   
@@ -89,6 +132,66 @@ const fillFieldAndTab = (selector: string, value: string): boolean => {
     }
   }
   return success;
+};
+
+// Interactive element handling functions
+const clickElement = (selector: string): boolean => {
+  try {
+    const element = document.querySelector(selector) as HTMLElement;
+    if (element) {
+      element.click();
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Error clicking element:', error);
+    return false;
+  }
+};
+
+const toggleCheckbox = (selector: string, checked: boolean): boolean => {
+  try {
+    const element = document.querySelector(selector) as HTMLInputElement;
+    if (element && element.type === 'checkbox') {
+      if (element.checked !== checked) {
+        element.click();
+      }
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Error toggling checkbox:', error);
+    return false;
+  }
+};
+
+const selectRadioButton = (selector: string): boolean => {
+  try {
+    const element = document.querySelector(selector) as HTMLInputElement;
+    if (element && element.type === 'radio') {
+      element.click();
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Error selecting radio button:', error);
+    return false;
+  }
+};
+
+const selectOption = (selector: string, value: string): boolean => {
+  try {
+    const element = document.querySelector(selector) as HTMLSelectElement;
+    if (element) {
+      element.value = value;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error('Error selecting option:', error);
+    return false;
+  }
 };
 
 const navigateToNextPage = (): void => {
@@ -160,6 +263,46 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         sendResponse({ success: true });
       } catch (error) {
         console.error('Error navigating to next page:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+      break;
+      
+    case 'clickElement':
+      try {
+        const success = clickElement(msg.selector);
+        sendResponse({ success });
+      } catch (error) {
+        console.error('Error clicking element:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+      break;
+      
+    case 'toggleCheckbox':
+      try {
+        const success = toggleCheckbox(msg.selector, msg.checked);
+        sendResponse({ success });
+      } catch (error) {
+        console.error('Error toggling checkbox:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+      break;
+      
+    case 'selectRadioButton':
+      try {
+        const success = selectRadioButton(msg.selector);
+        sendResponse({ success });
+      } catch (error) {
+        console.error('Error selecting radio button:', error);
+        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+      break;
+      
+    case 'selectOption':
+      try {
+        const success = selectOption(msg.selector, msg.value);
+        sendResponse({ success });
+      } catch (error) {
+        console.error('Error selecting option:', error);
         sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
       }
       break;

@@ -33,7 +33,6 @@ export interface ResumeData {
     schoolName: string;
     major: string;
     location: {
-      address: string;
       city: string;
       state: string;
       zipCode: string;
@@ -45,6 +44,7 @@ export interface ResumeData {
   }>;
   skills: string[];
   certifications: string[];
+  jobDescription?: string; // Optional job description for context
   legal: {
     authorizedToWorkInUSA: boolean;
     needSponsorship: boolean;
@@ -72,7 +72,7 @@ export class ResumeParserService {
   ): Promise<ResumeData> {
     try {
       // Create session with resume parsing system prompt
-      const systemPrompt = `You are a resume parsing expert. Parse unstructured resume text into structured JSON format.
+      const systemPrompt = `You are a resume parsing expert. Parse plain resume text into structured JSON format.
 
 Instructions:
 - Extract all available information from the resume
@@ -81,7 +81,7 @@ Instructions:
 - Set boolean values to false if not specified
 - Use current timestamp for lastUpdated
 - Be thorough but accurate
-- Return only valid JSON, no explanations`;
+- Return only JSONfied resume data`;
 
       await this.baseService.createSession(
         systemPrompt,
@@ -116,7 +116,6 @@ ${rawResumeText}`;
               location: {
                 type: "object",
                 properties: {
-                  address: { type: "string" },
                   city: { type: "string" },
                   state: { type: "string" },
                   zipCode: { type: "string" }
@@ -148,7 +147,6 @@ ${rawResumeText}`;
                 location: {
                   type: "object",
                   properties: {
-                    address: { type: "string" },
                     city: { type: "string" },
                     state: { type: "string" },
                     zipCode: { type: "string" }

@@ -11,9 +11,10 @@ const SidePanel = () => {
   const [currentURL, setCurrentURL] = useState<string>("");
   const [resumeData, setResumeData] = useState<ResumeData | null>(null);
   const [resumeText, setResumeText] = useState<string>("");
+  const [jobDescription, setJobDescription] = useState<string>("");
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [aiResponses, setAiResponses] = useState<AIResponse[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [isFillingForm, setIsFillingForm] = useState(false);// form filling
   const [isParsingResume, setIsParsingResume] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [aiAvailability, setAiAvailability] = useState<AIAvailability>({ status: 'checking' });
@@ -83,7 +84,7 @@ const SidePanel = () => {
   };
 
   const detectFormFields = async () => {
-    setIsProcessing(true);
+    setIsFillingForm(true);
     try {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       const tab = tabs[0];
@@ -100,19 +101,20 @@ const SidePanel = () => {
     } catch (error) {
       console.error('Failed to detect form fields:', error);
     } finally {
-      setIsProcessing(false);
+      setIsFillingForm(false);
     }
   };
 
   const fillFormFields = async () => {
     if (!resumeData || formFields.length === 0) return;
     
-    setIsProcessing(true);
+    setIsFillingForm(true);
     
     try {
-      // Initialize form filler with resume data
+      // Initialize form filler with resume data and job description
       await formFillerService.initialize(
         resumeData,
+        jobDescription.trim() || undefined, // Pass job description if not empty
         (progress) => setDownloadProgress(progress),
         (error) => console.error('Form Filler Error:', error)
       );
@@ -150,7 +152,7 @@ const SidePanel = () => {
     } finally {
       // Clean up form filler
       await formFillerService.cleanup();
-      setIsProcessing(false);
+      setIsFillingForm(false);
       setDownloadProgress(0);
       setQuotaUsage(null);
     }
@@ -251,23 +253,23 @@ const SidePanel = () => {
         <div>
           <button 
             onClick={detectFormFields}
-            disabled={isProcessing}
+            disabled={isFillingForm}
           >
             Detect Form Fields
           </button>
           
           <button 
             onClick={fillFormFields}
-            disabled={isProcessing || !resumeData || formFields.length === 0 || aiAvailability.status !== 'available'}
+            disabled={isFillingForm || !resumeData || formFields.length === 0 || aiAvailability.status !== 'available'}
           >
-            {isProcessing ? 'Processing...' : 
+            {isFillingForm ? 'Filling Form...' : 
              aiAvailability.status !== 'available' ? 'AI Not Available' : 'Auto Fill Form'}
           </button>
 
-          {(isProcessing || isParsingResume) && (
+          {(isFillingForm || isParsingResume) && (
             <button 
               onClick={() => {
-                if (isProcessing) {
+                if (isFillingForm) {
                   formFillerService.abortOperation();
                 } else if (isParsingResume) {
                   resumeParserService.abortOperation();
@@ -312,6 +314,18 @@ const SidePanel = () => {
         </div>
 
         <div>
+          <label>
+            <strong>Job Description (Optional):</strong>
+            <textarea
+              value={jobDescription}
+              onChange={(e) => setJobDescription(e.target.value)}
+              placeholder="Paste the job description here to help AI match your resume to the job requirements"
+              rows={4}
+            />
+          </label>
+        </div>
+
+        <div>
           <button 
             onClick={parseResumeWithAI}
             disabled={isParsingResume || !resumeText.trim() || aiAvailability.status !== 'available'}
@@ -322,7 +336,7 @@ const SidePanel = () => {
           {isParsingResume && (
             <button 
               onClick={() => {
-                if (isProcessing) {
+                if (isFillingForm) {
                   formFillerService.abortOperation();
                 } else if (isParsingResume) {
                   resumeParserService.abortOperation();
