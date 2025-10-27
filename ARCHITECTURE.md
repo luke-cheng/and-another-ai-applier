@@ -1,79 +1,76 @@
-# Project Structure Decisions
+# Project Flow & Structure
 
-> This is more or less an agentic ai. However due to the limited capablity of local model, we'll need to provide the agent
+This project implements an agentic AI approach for automated job application form filling, integrating local AI and browser APIs. Because of model constraints, the system is designed so the AI works in a tool-using, agentic, but supervised flow.
 
-## Architecture Overview
+## Overall Flow
 
-Simple workflow: User uploads resume → User clicks "Auto Fill" → Form detection → AI processing → Form filling
+1. **User uploads resume**
+2. **User clicks "Auto Fill"**
+3. **System detects form fields on the active page**
+4. **Fields are passed, one by one, to the AI agent, which returns suggested input (or actions, e.g., clicking a button) for each**
+5. **Form fields are filled sequentially (simulating tab order / accessibility flow), optionally navigating to the next page after completion**
 
-## Component Design
+## Component Flow
 
-## UI (sidepanel)
+### UI (Sidepanel)
 
-### Main function
+- **Auto-Fill Panel**
 
-- Auto-Fill Control Panel
+  - Controls for starting auto fill (step-by-step and fully automatic modes)
+  - Mimics accessibility flow: Press Tab → Fetch next field/label → Get AI suggestion → Fill → Tab → etc.
+  - Option to enable auto-navigation to next form page
 
-  - toggle: two form filling mode
+- **Resume Management**
+  - CRUD interface for editing and managing resumes, persisted to local storage (`chrome.sync`)
+- **Debug Info**
+  - Debug Panel displays:
+    - JSON-formatted resume data
+    - The input/output for the language model per field
 
-    1. fetch all form label and then run them parrelly though the ai service and fill the form with ai's reponse.
-    2. mimicing accessbility where we use tab -> fetch label -> push to AI to get response -> use the AI input to fill the form -> tab ->...
+### AI Service Flow
 
-  - toggle: Fully auto mode (which will also navigate to the next page after all form is filled)
+- **Backed by Chrome's Gemini Nano API (`LanguageModel.create()` / `Writer.create()`)**
+  - Created in [`src/types/languageModel.ts`](./src/types/languageModel.ts)
+  - **`LanguageModel`**: Used for parsing resumes and simple field extraction
+  - **`Writer`**: Used for complex, open-ended question responses
+- **Tracks model download/progress events**
 
-- Resume Management Section
-  - CRUD for local storage in a text field
-- Debug information
+  - UI progress bar updates from model events
 
-### Debug Pannel
-
-Display simple json to frontend. e.g json formated resume, languageModel's input and output.
-
-## Serivce
-
-### AI Service
-
-- Uses Chrome's built-in Gemini Nano API (globally accessible via `LanguageModel.create()` or `Writer.create()`)
-  - `LanguageModel`: For simple form fields and resume parsing
-  - `Writer`: For questions like "Why do you want to work with xxx?"
-- Keeps track of the model downloading progress, which will show to a progress bar in the UI
-
-```js
-const session = await LanguageModel.create({
-  monitor(m) {
-    m.addEventListener("downloadprogress", (e) => {
-      console.log(`Downloaded ${e.loaded * 100}%`);
+    ```js
+    const session = await LanguageModel.create({
+      monitor(m) {
+        m.addEventListener("downloadprogress", (e) => {
+          console.log(`Downloaded ${e.loaded * 100}%`);
+        });
+      },
     });
-  },
-});
-```
+    ```
 
-- Prevents input from exceeding the model's maximum tokens.
+- **Manages token quotas**
 
-```js
-console.log(`${session.inputUsage}/${session.inputQuota}`);
-```
+  - Prevents input to model from exceeding quota
 
-### Form Detector
+    ```js
+    console.log(`${session.inputUsage}/${session.inputQuota}`);
+    ```
 
-- Two detection modes with a switch in the side panel:
-  - Basic form detection (simple input fields)
-  - Accessibility-based detection (ARIA labels, semantic HTML)
-- Users can test both modes to determine which works better
+### Form Detector (Content Script) Flow
 
-> Debug Panel: display all fetched fields
+- Detects form fields by scanning `input`, `textarea`, `select`, `button`, `checkbox`, `radio` elements, etc.
+- Uses a tolerant, generalized approach to determine field type/role because forms vary widely
+- Fields are described with labels, types, and position, then passed to the AI for tool-based action selection
 
-### Resume Storage
+  > Debug Panel shows collected fields as JSON
 
-- Simple JSON structure for resume data
-- Storage with `chrome.sync`
-- Functions: saveResume(), getResume(), updateResume()
+### Resume Storage Flow
 
-> Debug Panel: show simple JSON.stringify resume
+- Resume stored as JSON in `chrome.sync`
+- Exposed functions: `saveResume()`, `getResume()`, `updateResume()`
+- Simple debug display in sidepanel (for transparency/troubleshooting)
 
-### Form Filler
+### Form Filling Flow
 
-- Fills form fields with AI responses
-- Functions: fillField(), fillAllFields(), validateFill()
-
-> Debug Panel: show AI's input/output for each field.
+- AI responses used to fill individual fields sequentially (with the possibility to batch-process or validate)
+- Exposed functions: `fillField()`, `fillAllFields()`, `validateFill()`
+- Debug displays AI request/response per field for diagnostic purposes
