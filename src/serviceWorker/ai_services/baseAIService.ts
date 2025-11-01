@@ -1,7 +1,7 @@
 // Lightweight Base AI Service
 // Provides core session management and common AI operations
 
-/// <reference path="../types/languageModel.ts" />
+/// <reference path="../../types/languageModel.ts" />
 
 export interface AIAvailability {
   status: Availability | 'checking';
@@ -31,7 +31,15 @@ export class BaseAIService {
    */
   async checkAvailability(): Promise<AIAvailability> {
     try {
-      const availability = await window.LanguageModel.availability();
+      // Validate context - LanguageModel should be available in background/service worker
+      if (typeof LanguageModel === 'undefined') {
+        return {
+          status: 'unavailable',
+          error: 'LanguageModel API is not available in this context. Ensure code runs in background service worker.'
+        };
+      }
+
+      const availability = await LanguageModel.availability();
       return { status: availability };
     } catch (error) {
       console.error('Failed to check AI availability:', error);
@@ -47,7 +55,12 @@ export class BaseAIService {
    */
   async getModelParams(): Promise<LanguageModelParams | null> {
     try {
-      return await window.LanguageModel.params();
+      // Validate context
+      if (typeof LanguageModel === 'undefined') {
+        throw new Error('LanguageModel API is not available in this context');
+      }
+
+      return await LanguageModel.params();
     } catch (error) {
       console.error('Failed to get model parameters:', error);
       throw new Error('Failed to get model parameters');
@@ -63,6 +76,11 @@ export class BaseAIService {
     onError?: AIErrorCallback
   ): Promise<AISession> {
     try {
+      // Validate context
+      if (typeof LanguageModel === 'undefined') {
+        throw new Error('LanguageModel API is not available in this context. Ensure code runs in background service worker.');
+      }
+
       // Check availability first
       const availability = await this.checkAvailability();
       if (availability.status === 'unavailable') {
@@ -79,7 +97,7 @@ export class BaseAIService {
       this.abortController = new AbortController();
 
       // Create session with system prompt and abort signal
-      const session = await window.LanguageModel.create({
+      const session = await LanguageModel.create({
         temperature: params.defaultTemperature,
         topK: params.defaultTopK,
         signal: this.abortController.signal,
@@ -113,7 +131,14 @@ export class BaseAIService {
   }
 
   /**
-   * Clone the current session
+   * Get the current session (for internal use by services)
+   */
+  getCurrentSession(): LanguageModel | null {
+    return this.currentSession;
+  }
+
+  /**
+   * Clone the current session (for parallel processing if needed)
    */
   async cloneSession(): Promise<LanguageModel> {
     if (!this.currentSession) {

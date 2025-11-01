@@ -33,8 +33,7 @@
     "sidePanel",
     "activeTab",
     "scripting",
-    "tabs",
-    "languageModel"
+    "tabs"
   ],
 
   "host_permissions": [

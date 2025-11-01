@@ -1,315 +1,280 @@
-// Import types from formFillerService
-import { FormField } from './services/formFillerService';
+// Content Script - Runs in web page context
+// Handles form detection, dropdown expansion, and form filling
 
-// Form detection function - enhanced to detect required fields and interactive elements
-const detectFormFields = (): FormField[] => {
-  const fields: FormField[] = [];
-  
-  // Detect all form elements including buttons
-  const elements = document.querySelectorAll('input, textarea, select, button');
-  
-  elements.forEach((element, index) => {
-    const htmlElement = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement;
-    
-    // Skip hidden fields
-    if (htmlElement.type === 'hidden') return;
-    
-    // Determine element type
-    let elementType: 'input' | 'textarea' | 'select' | 'button' | 'checkbox' | 'radio' | 'other' = 'other';
-    if (htmlElement.tagName.toLowerCase() === 'button') {
-      elementType = 'button';
-    } else if (htmlElement.tagName.toLowerCase() === 'textarea') {
-      elementType = 'textarea';
-    } else if (htmlElement.tagName.toLowerCase() === 'select') {
-      elementType = 'select';
-    } else if (htmlElement.type === 'checkbox') {
-      elementType = 'checkbox';
-    } else if (htmlElement.type === 'radio') {
-      elementType = 'radio';
-    } else if (htmlElement.tagName.toLowerCase() === 'input') {
-      elementType = 'input';
-    }
-    
-    // Get label text
-    let label = '';
-    const labelElement = document.querySelector(`label[for="${htmlElement.id}"]`);
-    if (labelElement) {
-      label = labelElement.textContent?.trim() || '';
-    } else {
-      // Try to find nearby text
-      const parent = htmlElement.parentElement;
-      if (parent) {
-        const textNodes = Array.from(parent.childNodes).filter(node => 
-          node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
-        );
-        if (textNodes.length > 0) {
-          label = textNodes[0].textContent?.trim() || '';
+import { FormField, FormFillingConfig, FormFillingResult, AIResponse } from "./serviceWorker/ai_services/formFillerService/type";
+import { detectFormFields } from "./content_script/fieldDetection";
+import { expandAllDropdowns } from "./content_script/dropdownUtils";
+import { fillFormField } from "./content_script/formFilling";
+import { uploadResumeFile } from "./content_script/resumeUpload";
+
+/**
+ * Wait for website's built-in autofill to complete
+ * Uses multiple strategies: UI state monitoring, DOM polling, and timeout fallback
+ */
+async function waitForAutofillComplete(
+  initialFields: FormField[],
+  maxWaitTime: number = 10000
+): Promise<void> {
+  const startTime = Date.now();
+  const pollInterval = 500; // Poll every 500ms
+
+  return new Promise<void>((resolve) => {
+    // Strategy 1: Monitor UI indicators (e.g., spinner disappearance, pending state changes)
+    const checkUIState = (): boolean => {
+      // Check for Ashby-style pending indicators
+      const pendingLayer = document.querySelector(
+        '.ashby-application-form-autofill-input-pending-layer[data-state="visible"], .ashby-application-form-autofill-input-pending-layer:not([data-state="hidden"])'
+      );
+      if (pendingLayer) {
+        return false; // Still pending
+      }
+
+      // Check for any spinner/loading indicators in autofill containers
+      const spinners = document.querySelectorAll(
+        '[class*="autofill"] [class*="spinner"], [class*="autofill"] [role="progressbar"]'
+      );
+      for (const spinner of Array.from(spinners)) {
+        const style = window.getComputedStyle(spinner);
+        if (style.display !== 'none' && style.visibility !== 'hidden') {
+          return false; // Still loading
         }
       }
-    }
-    
-    // Check if field is required
-    const isRequired = htmlElement.hasAttribute('required') || 
-                      htmlElement.getAttribute('aria-required') === 'true' ||
-                      label.includes('*') ||
-                      label.toLowerCase().includes('required');
-    
-    // Generate selector
-    let selector = '';
-    if (htmlElement.id) {
-      selector = `#${htmlElement.id}`;
-    } else if (htmlElement.name) {
-      selector = `[name="${htmlElement.name}"]`;
-    } else {
-      selector = `${htmlElement.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
-    }
-    
-    // Get options for select elements
-    let options: string[] | undefined;
-    if (elementType === 'select') {
-      const selectElement = htmlElement as HTMLSelectElement;
-      options = Array.from(selectElement.options).map(option => option.text);
-    }
-    
-    // Get checked state for checkboxes and radio buttons
-    let checked: boolean | undefined;
-    if (elementType === 'checkbox' || elementType === 'radio') {
-      checked = (htmlElement as HTMLInputElement).checked;
-    }
-    
-    // Get appropriate label for buttons
-    let fieldLabel = label;
-    if (elementType === 'button') {
-      fieldLabel = htmlElement.textContent?.trim() || htmlElement.value || `Button ${index + 1}`;
-    } else if (!fieldLabel) {
-      fieldLabel = (htmlElement as HTMLInputElement | HTMLTextAreaElement).placeholder || `Field ${index + 1}`;
-    }
-    
-    fields.push({
-      id: htmlElement.id || `field_${index}`,
-      label: fieldLabel,
-      type: htmlElement.type || htmlElement.tagName.toLowerCase(),
-      value: htmlElement.value || '',
-      selector: selector,
-      required: isRequired,
-      elementType: elementType,
-      options: options,
-      checked: checked
+
+      return true; // No loading indicators found
+    };
+
+    // Strategy 2: Poll for DOM changes (check if previously empty fields now have values)
+    const checkFieldValues = (): boolean => {
+      let filledCount = 0;
+      for (const field of initialFields) {
+        if (field.type === 'file') continue; // Skip file inputs
+
+        const element = document.getElementById(field.id) || 
+                       document.querySelector(field.selector) as HTMLElement;
+        if (!element) continue;
+
+        let currentValue: string | boolean = '';
+        
+        if (element instanceof HTMLInputElement) {
+          if (element.type === 'checkbox' || element.type === 'radio') {
+            currentValue = element.checked;
+          } else {
+            currentValue = element.value;
+          }
+        } else if (element instanceof HTMLTextAreaElement) {
+          currentValue = element.value;
+        } else if (element instanceof HTMLSelectElement) {
+          currentValue = element.value;
+        }
+
+        // Check if field was empty before and now has a value
+        const wasEmpty = !field.value || 
+                        field.value === '' || 
+                        (typeof field.value === 'boolean' && !field.value) ||
+                        (Array.isArray(field.value) && field.value.length === 0);
+        
+        const nowHasValue = (typeof currentValue === 'string' && currentValue.trim() !== '') ||
+                           (typeof currentValue === 'boolean' && currentValue) ||
+                           (Array.isArray(currentValue) && currentValue.length > 0);
+
+        if (wasEmpty && nowHasValue) {
+          filledCount++;
+        }
+      }
+
+      // If at least one previously empty field now has a value, autofill may be working
+      // We'll consider it complete if no loading indicators are present
+      return filledCount > 0 || checkUIState();
+    };
+
+    // Also use polling as a fallback - declare before MutationObserver so it can reference it
+    let pollIntervalId: NodeJS.Timeout | null = null;
+
+    // Strategy 3: Use MutationObserver for more efficient change detection
+    const observer = new MutationObserver(() => {
+      if (checkUIState() && checkFieldValues()) {
+        observer.disconnect();
+        if (pollIntervalId) clearInterval(pollIntervalId);
+        resolve();
+      }
     });
+
+    // Observe changes in the document
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-state', 'class', 'style'],
+    });
+
+    // Start polling as a fallback
+    pollIntervalId = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      
+      // Timeout fallback
+      if (elapsed >= maxWaitTime) {
+        observer.disconnect();
+        if (pollIntervalId) clearInterval(pollIntervalId);
+        console.log('Autofill wait timeout - proceeding anyway');
+        resolve();
+        return;
+      }
+
+      // Check if autofill appears complete
+      if (checkUIState() && checkFieldValues()) {
+        observer.disconnect();
+        if (pollIntervalId) clearInterval(pollIntervalId);
+        resolve();
+      }
+    }, pollInterval) as NodeJS.Timeout;
+
+    // Initial check
+    if (checkUIState() && checkFieldValues()) {
+      observer.disconnect();
+      if (pollIntervalId) clearInterval(pollIntervalId);
+      resolve();
+    }
   });
-  
-  return fields;
-};
+}
 
-// Form filling functions
-const fillField = (selector: string, value: string): boolean => {
-  try {
-    const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-    if (element) {
-      element.focus();
-      element.value = value;
-      
-      // Trigger change events
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      
-      return true;
-    }
-    return false;
-  } catch (error) {
-    console.error('Error filling field:', error);
-    return false;
+// Main message handler
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "detectFormFields") {
+    console.log('[FIELD DETECTION] Starting field detection...');
+    // Expand dropdowns and detect fields (now properly async)
+    expandAllDropdowns()
+      .then(async () => {
+        const fields = await detectFormFields(expandAllDropdowns);
+        console.log(`[FIELD DETECTION] ✓ Detected ${fields.length} form fields`);
+        sendResponse({ fields });
+      })
+      .catch((error) => {
+        console.error("[FIELD DETECTION] ✗ Error detecting form fields:", error);
+        sendResponse({ fields: [] });
+      });
+    
+    return true; // Keep channel open for async response
   }
-};
 
-const fillFieldAndTab = (selector: string, value: string): boolean => {
-  const success = fillField(selector, value);
-  if (success) {
-    // Simulate tab key press
-    const element = document.querySelector(selector) as HTMLElement;
-    if (element) {
-      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-    }
-  }
-  return success;
-};
+  if (message.action === "fillForm") {
+    console.log('[AUTOFILL] Starting form fill process...');
+    const { resumeData, jobDescription, config } = message as {
+      resumeData: any;
+      jobDescription: string;
+      config: FormFillingConfig;
+    };
 
-// Interactive element handling functions
-const clickElement = (selector: string): boolean => {
-  try {
-    const element = document.querySelector(selector) as HTMLElement;
-    if (element) {
-      element.click();
-      return true;
-    }
-    return false;
-  } catch (error) {
-    console.error('Error clicking element:', error);
-    return false;
-  }
-};
+    // Restructured flow: Upload resume first, wait for autofill, then fill remaining fields
+    expandAllDropdowns()
+      .then(async () => {
+        console.log('[AUTOFILL] Step 1: Detecting initial form fields...');
+        // Step 1: Initial field detection (to capture baseline state)
+        const initialFields = await detectFormFields(expandAllDropdowns);
+        console.log(`[AUTOFILL] Detected ${initialFields.length} initial fields`);
 
-const toggleCheckbox = (selector: string, checked: boolean): boolean => {
-  try {
-    const element = document.querySelector(selector) as HTMLInputElement;
-    if (element && element.type === 'checkbox') {
-      if (element.checked !== checked) {
-        element.click();
-      }
-      return true;
-    }
-    return false;
-  } catch (error) {
-    console.error('Error toggling checkbox:', error);
-    return false;
-  }
-};
+        // Step 2: Upload resume FIRST (if enabled)
+        let uploadSuccess = false;
+        if (config.uploadResume && resumeData) {
+          console.log('[AUTOFILL] Step 2: Uploading resume file...');
+          uploadSuccess = await uploadResumeFile(resumeData);
+          
+          if (uploadSuccess) {
+            console.log('[AUTOFILL] ✓ Resume uploaded successfully, waiting for website ATS to process...');
+            
+            // Step 3: Wait for website's built-in autofill to complete
+            console.log('[AUTOFILL] Step 3: Waiting for website ATS autofill to complete...');
+            await waitForAutofillComplete(initialFields);
+            console.log('[AUTOFILL] ✓ ATS autofill complete, re-detecting remaining empty fields...');
+          } else {
+            console.warn('[AUTOFILL] ✗ Failed to upload resume, proceeding with regular fill');
+          }
+        }
 
-const selectRadioButton = (selector: string): boolean => {
-  try {
-    const element = document.querySelector(selector) as HTMLInputElement;
-    if (element && element.type === 'radio') {
-      element.click();
-      return true;
-    }
-    return false;
-  } catch (error) {
-    console.error('Error selecting radio button:', error);
-    return false;
-  }
-};
+        // Step 4: Re-detect fields, filtering for empty ones only
+        await expandAllDropdowns();
+        const emptyFields = await detectFormFields(expandAllDropdowns, true); // filterEmpty = true
 
-const selectOption = (selector: string, value: string): boolean => {
-  try {
-    const element = document.querySelector(selector) as HTMLSelectElement;
-    if (element) {
-      element.value = value;
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
-    return false;
-  } catch (error) {
-    console.error('Error selecting option:', error);
-    return false;
-  }
-};
+        if (emptyFields.length === 0) {
+          console.log('[AUTOFILL] ✓ No empty fields found after autofill - form is complete!');
+          sendResponse({
+            success: true,
+            filledFields: uploadSuccess ? 1 : 0,
+            skippedFields: 0,
+            errorFields: 0,
+            responses: [],
+            errors: [],
+          });
+          return;
+        }
 
-const navigateToNextPage = (): void => {
-  // Look for common "Next" or "Continue" buttons
-  const nextSelectors = [
-    'button[type="submit"]',
-    'input[type="submit"]',
-    'button:contains("Next")',
-    'button:contains("Continue")',
-    'button:contains("Submit")',
-    '.next-button',
-    '.continue-button',
-    '.submit-button'
-  ];
-  
-  for (const selector of nextSelectors) {
-    const button = document.querySelector(selector) as HTMLButtonElement;
-    if (button) {
-      button.click();
-      return;
-    }
-  }
-  
-  // If no button found, try to find a form and submit it
-  const form = document.querySelector('form');
-  if (form) {
-    form.submit();
-  }
-};
+        console.log(`[AUTOFILL] Found ${emptyFields.length} empty fields remaining after ATS autofill`);
 
-// Message listener
-chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
-  console.log('Content script received message:', msg);
-  
-  switch (msg.action) {
-    case 'detectFormFields':
-      try {
-        const fields = detectFormFields();
-        sendResponse({ success: true, fields });
-      } catch (error) {
-        console.error('Error detecting form fields:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'fillField':
-      try {
-        const success = fillField(msg.selector, msg.value);
-        sendResponse({ success });
-      } catch (error) {
-        console.error('Error filling field:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'fillFieldAndTab':
-      try {
-        const success = fillFieldAndTab(msg.selector, msg.value);
-        sendResponse({ success });
-      } catch (error) {
-        console.error('Error filling field and tabbing:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'navigateToNextPage':
-      try {
-        navigateToNextPage();
-        sendResponse({ success: true });
-      } catch (error) {
-        console.error('Error navigating to next page:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'clickElement':
-      try {
-        const success = clickElement(msg.selector);
-        sendResponse({ success });
-      } catch (error) {
-        console.error('Error clicking element:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'toggleCheckbox':
-      try {
-        const success = toggleCheckbox(msg.selector, msg.checked);
-        sendResponse({ success });
-      } catch (error) {
-        console.error('Error toggling checkbox:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'selectRadioButton':
-      try {
-        const success = selectRadioButton(msg.selector);
-        sendResponse({ success });
-      } catch (error) {
-        console.error('Error selecting radio button:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    case 'selectOption':
-      try {
-        const success = selectOption(msg.selector, msg.value);
-        sendResponse({ success });
-      } catch (error) {
-        console.error('Error selecting option:', error);
-        sendResponse({ success: false, error: error instanceof Error ? error.message : 'Unknown error' });
-      }
-      break;
-      
-    default:
-      sendResponse({ success: false, error: 'Unknown action' });
+        // Step 5: Process only empty fields through AI
+        console.log('[AUTOFILL] Step 4: Processing remaining fields with AI...');
+        const aiResponses = await chrome.runtime.sendMessage({
+          action: "processFormFields",
+          fields: emptyFields,
+          resumeData,
+          jobDescription,
+        });
+        console.log(`[AUTOFILL] ✓ AI processed ${aiResponses.responses?.length || 0} fields`);
+
+        // Step 6: Fill remaining empty fields with AI responses
+        const result: FormFillingResult = {
+          success: true,
+          filledFields: uploadSuccess ? 1 : 0, // Count resume upload
+          skippedFields: 0,
+          errorFields: 0,
+          responses: aiResponses.responses || [],
+          errors: [],
+        };
+
+        if (aiResponses.responses) {
+          console.log('[AUTOFILL] Step 5: Filling fields with AI responses...');
+          for (const aiResponse of aiResponses.responses) {
+            // Find field by id - fieldId matches element.id
+            const field = emptyFields.find((f) => f.id === aiResponse.fieldId);
+            if (field) {
+              const success = fillFormField(field, aiResponse.output);
+              if (success) {
+                result.filledFields++;
+              } else {
+                result.errorFields++;
+                result.errors.push({
+                  fieldId: aiResponse.fieldId,
+                  error: "Failed to fill field",
+                });
+              }
+            } else {
+              result.skippedFields++;
+            }
+          }
+        }
+
+        if (!uploadSuccess && config.uploadResume && resumeData) {
+          result.errors.push({
+            fieldId: "resume-upload",
+            error: "Failed to upload resume file",
+          });
+        }
+
+        console.log(`[AUTOFILL] ✓ Process complete! Filled: ${result.filledFields}, Errors: ${result.errorFields}, Skipped: ${result.skippedFields}`);
+        sendResponse(result);
+      })
+      .catch((error) => {
+        console.error("[AUTOFILL] ✗ Error filling form:", error);
+        sendResponse({
+          success: false,
+          filledFields: 0,
+          skippedFields: 0,
+          errorFields: 0,
+          responses: [],
+          errors: [{ fieldId: "general", error: error instanceof Error ? error.message : "Unknown error" }],
+        });
+      });
+
+    return true; // Keep channel open for async response
   }
-  
-  return true; // Keep message channel open for async response
+
+  return false;
 });
